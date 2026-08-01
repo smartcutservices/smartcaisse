@@ -1,0 +1,19 @@
+{
+  "name": "Smart Caisse",
+  "short_name": "Smart Caisse",
+  "description": "Interface de vente physique synchronisee avec Smart Cut Services.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#05070d",
+  "theme_color": "#05070d",
+  "icons": [
+    {
+      "src": "./assets/smart-caisse-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
