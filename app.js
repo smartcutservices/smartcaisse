@@ -18,16 +18,33 @@ import {
   updateDoc,
 } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js';
 
-const APP_VERSION = '20260801-55';
+const APP_VERSION = '20260802-4';
 const LOCATION_COLLECTION = 'smartManagementLocations';
 const PRODUCT_COLLECTION = 'products';
 const CATEGORY_COLLECTION = 'categories_list';
 const CLIENT_COLLECTION = 'clients';
 const STOCK_BALANCE_COLLECTION = 'smartManagementStockBalances';
+const STOCK_MOVEMENT_COLLECTION = 'smartManagementStockMovements';
+const STOCK_TRANSFER_COLLECTION = 'smartManagementStockTransfers';
 const CASH_SESSION_COLLECTION = 'smartManagementCashSessions';
 const CASH_SALE_COLLECTION = 'smartManagementPosSales';
 const STOCK_OPERATION_URL = 'https://us-central1-smartcutservices-9ce54.cloudfunctions.net/smartManagementStockOperation';
-const ALLOWED_ROLES = new Set(['admin', 'manager', 'caissier']);
+const ALLOWED_ROLES = new Set(['admin', 'manager', 'stock_manager', 'caissier']);
+const ROLE_ALIASES = {
+  responsable: 'manager',
+  gestionnaire: 'manager',
+  store_manager: 'manager',
+  manager_store: 'manager',
+  cashier: 'caissier',
+  caissiere: 'caissier',
+  caissière: 'caissier',
+  stock: 'stock_manager',
+  responsable_stock: 'stock_manager',
+  inventory_manager: 'stock_manager',
+  administrateur: 'admin',
+};
+const MANAGER_VIEWS = new Set(['manager-overview', 'manager-sales', 'manager-stock', 'manager-reports', 'manager-sessions']);
+const STOCK_VIEWS = new Set(['stock-overview', 'stock-inventory', 'stock-products', 'stock-movements', 'stock-transfers', 'stock-physical', 'stock-locations', 'stock-reports']);
 
 const root = document.getElementById('app');
 const state = {
@@ -38,6 +55,8 @@ const state = {
   categories: [],
   clients: [],
   balances: [],
+  movements: [],
+  transfers: [],
   sessions: [],
   sales: [],
   selectedLocationId: '',
@@ -64,6 +83,11 @@ const state = {
   discountAuthError: '',
   sidebarCollapsed: false,
   activeView: 'register',
+  managerLocationId: 'all',
+  managerPeriod: '30',
+  managerSearch: '',
+  stockPeriod: '30',
+  stockSearch: '',
   loading: false,
 };
 
@@ -160,16 +184,33 @@ async function safeDocs(ref, fallback = [], label = 'collection') {
 }
 
 function getRole(profile = {}) {
-  return String(profile.role || profile.smartRole || '').trim().toLowerCase();
+  const rawRole = String(profile.role || profile.smartRole || '').trim().toLowerCase();
+  return ROLE_ALIASES[rawRole] || rawRole;
 }
 
 function canUseCaisse(profile = {}) {
   const role = getRole(profile);
+  if (String(profile.status || '').toLowerCase() === 'inactive') return false;
   return ALLOWED_ROLES.has(role) || profile.smartManagementAccess === true || profile.dashboardAccess === true;
 }
 
 function getDisplayName() {
-  return state.profile?.name || state.profile?.username || state.user?.displayName || state.user?.email || 'Utilisateur';
+  return state.profile?.name || state.profile?.displayName ||
+    [state.profile?.firstName || state.profile?.prenom, state.profile?.lastName || state.profile?.nom]
+      .filter(Boolean).join(' ') ||
+    state.profile?.username || state.user?.displayName || state.user?.email || 'Utilisateur';
+}
+
+function isManager() {
+  return getRole(state.profile || {}) === 'manager';
+}
+
+function isStockManager() {
+  return getRole(state.profile || {}) === 'stock_manager';
+}
+
+function isBackOfficeRole() {
+  return isManager() || isStockManager();
 }
 
 function getProductName(product = {}) {
@@ -584,34 +625,64 @@ function getCartTotals() {
 }
 
 async function loadProfile(user) {
-  const snap = await getDoc(doc(db, 'clients', user.uid));
-  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+  let smartManagementSnap = null;
+  try {
+    smartManagementSnap = await getDoc(doc(db, 'smartManagementUsers', user.uid));
+  } catch (error) {
+    console.warn('[SMART_CAISSE] Profil Smart Management indisponible, fallback clients', {
+      code: error?.code || '',
+      message: error?.message || String(error),
+    });
+  }
+  if (smartManagementSnap?.exists()) {
+    const profile = { id: smartManagementSnap.id, ...smartManagementSnap.data() };
+    console.info('[SMART_CAISSE] Profil chargé', { source: 'smartManagementUsers', role: getRole(profile) || null });
+    return profile;
+  }
+  try {
+    const clientSnap = await getDoc(doc(db, 'clients', user.uid));
+    if (clientSnap.exists()) {
+      const profile = { id: clientSnap.id, ...clientSnap.data() };
+      console.info('[SMART_CAISSE] Profil chargé', { source: 'clients', role: getRole(profile) || null });
+      return profile;
+    }
+  } catch (error) {
+    console.warn('[SMART_CAISSE] Profil client indisponible', {
+      code: error?.code || '',
+      message: error?.message || String(error),
+    });
+  }
+  return null;
 }
 
 async function loadWorkspace() {
   state.loading = true;
   renderApp();
-  const [locations, products, categories, balances, sessions, sales] = await Promise.all([
+  const [locations, products, categories, balances, movements, transfers, sessions, sales] = await Promise.all([
     // Do not order this query in Firestore: legacy locations may not have createdAt.
     // Sorting after the read keeps those valid locations visible to the cashier.
     safeDocs(collection(db, LOCATION_COLLECTION), [], LOCATION_COLLECTION),
     safeDocs(collection(db, PRODUCT_COLLECTION), [], PRODUCT_COLLECTION),
     safeDocs(collection(db, CATEGORY_COLLECTION), [], CATEGORY_COLLECTION),
     safeDocs(query(collection(db, STOCK_BALANCE_COLLECTION), orderBy('updatedAt', 'desc'), limit(600)), [], STOCK_BALANCE_COLLECTION),
+    safeDocs(query(collection(db, STOCK_MOVEMENT_COLLECTION), limit(300)), [], STOCK_MOVEMENT_COLLECTION),
+    safeDocs(query(collection(db, STOCK_TRANSFER_COLLECTION), limit(200)), [], STOCK_TRANSFER_COLLECTION),
     safeDocs(query(collection(db, CASH_SESSION_COLLECTION), orderBy('openedAt', 'desc'), limit(120)), [], CASH_SESSION_COLLECTION),
-    safeDocs(query(collection(db, CASH_SALE_COLLECTION), orderBy('createdAt', 'desc'), limit(25)), [], CASH_SALE_COLLECTION),
+    safeDocs(query(collection(db, CASH_SALE_COLLECTION), orderBy('createdAt', 'desc'), limit(200)), [], CASH_SALE_COLLECTION),
   ]);
   state.locations = locations.sort((a, b) => getDateMs(b.createdAt || b.updatedAt) - getDateMs(a.createdAt || a.updatedAt));
   state.products = products;
   state.categories = categories;
   state.clients = [];
   state.balances = balances;
+  state.movements = movements;
+  state.transfers = transfers;
   state.sessions = sessions;
   state.sales = sales;
   if (!state.selectedLocationId || !getActiveLocations().some((location) => location.id === state.selectedLocationId)) {
     state.selectedLocationId = getActiveLocations()[0]?.id || '';
   }
-  await ensureAutomaticSession();
+  if (!isBackOfficeRole()) await ensureAutomaticSession();
   console.info('[SMART_CAISSE] Catalogue chargé', {
     locations: state.locations.length,
     products: state.products.length,
@@ -678,19 +749,450 @@ function renderForbidden() {
   refreshIcons();
 }
 
+function managerLocationMatches(record = {}) {
+  return state.managerLocationId === 'all' || !state.managerLocationId || record.locationId === state.managerLocationId;
+}
+
+function managerPeriodMatches(value) {
+  const period = String(state.managerPeriod || '30');
+  if (period === 'all') return true;
+  const dateMs = getDateMs(value);
+  if (!dateMs) return false;
+  const days = Number(period);
+  return dateMs >= Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+function getManagerSales() {
+  const search = normalizeText(state.managerSearch).toLowerCase();
+  return state.sales
+    .filter((sale) => String(sale.status || 'completed').toLowerCase() !== 'failed')
+    .filter((sale) => managerLocationMatches(sale))
+    .filter((sale) => managerPeriodMatches(sale.createdAt || sale.completedAt))
+    .filter((sale) => {
+      if (!search) return true;
+      const haystack = [
+        sale.reference,
+        sale.locationName,
+        sale.cashierName,
+        sale.createdByName,
+        ...(Array.isArray(sale.items) ? sale.items.flatMap((item) => [item.productName, item.sku]) : []),
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes(search);
+    })
+    .sort((a, b) => getDateMs(b.createdAt || b.completedAt) - getDateMs(a.createdAt || a.completedAt));
+}
+
+function getManagerStockRows() {
+  const productMap = new Map(state.products.map((product) => [product.id, product]));
+  const rows = state.balances
+    .filter((balance) => managerLocationMatches(balance))
+    .map((balance) => {
+      const product = productMap.get(balance.productId) || {};
+      const availableQty = toNumber(balance.availableQty ?? (toNumber(balance.physicalQty) - toNumber(balance.reservedQty)));
+      return {
+        id: `${balance.productId}|${balance.variantId || ''}|${balance.locationId || ''}`,
+        name: balance.productName || getProductName(product),
+        sku: balance.sku || product.sku || '-',
+        locationName: balance.locationName || state.locations.find((location) => location.id === balance.locationId)?.name || 'Magasin principal',
+        availableQty,
+        unitPrice: toNumber(balance.salePrice || balance.unitPrice || product.salePrice || product.price),
+        updatedAt: balance.updatedAt,
+      };
+    });
+  if (rows.length) return rows;
+
+  return state.products
+    .filter((product) => getProductStatus(product) !== 'inactive' && !isDigitalProduct(product))
+    .map((product) => ({
+      id: product.id,
+      name: getProductName(product),
+      sku: product.sku || '-',
+      locationName: 'Catalogue global',
+      availableQty: getProductStock(product),
+      unitPrice: getProductSalePrice(product),
+      updatedAt: product.updatedAt,
+    }));
+}
+
+function getManagerMetrics() {
+  const sales = getManagerSales();
+  const todayKey = new Date().toLocaleDateString('fr-FR');
+  const todaySales = sales.filter((sale) => new Date(getDateMs(sale.createdAt || sale.completedAt)).toLocaleDateString('fr-FR') === todayKey);
+  const itemCount = sales.reduce((sum, sale) => sum + toNumber(sale.itemCount || (Array.isArray(sale.items) ? sale.items.reduce((lineSum, item) => lineSum + toNumber(item.quantity), 0) : 0)), 0);
+  const lowStock = getManagerStockRows().filter((row) => row.availableQty > 0 && row.availableQty <= 3);
+  const openSessions = state.sessions.filter((session) => managerLocationMatches(session) && String(session.status || 'open').toLowerCase() !== 'closed');
+  return {
+    sales,
+    todaySales,
+    revenue: sales.reduce((sum, sale) => sum + toNumber(sale.total), 0),
+    todayRevenue: todaySales.reduce((sum, sale) => sum + toNumber(sale.total), 0),
+    itemCount,
+    lowStock,
+    openSessions,
+  };
+}
+
+function renderManagerWorkspace() {
+  return `
+    <main class="manager-workspace">
+      <header class="manager-page-head">
+        <div>
+          <p class="eyebrow">Supervision boutique</p>
+          <h2>${escapeHtml({
+            'manager-overview': 'Vue d\'ensemble',
+            'manager-sales': 'Ventes',
+            'manager-stock': 'Stock',
+            'manager-reports': 'Rapports',
+            'manager-sessions': 'Sessions de caisse',
+          }[state.activeView] || 'Vue d\'ensemble')}</h2>
+          <p>Suivez l'activite du magasin sans modifier les parametres administrateur.</p>
+        </div>
+        <div class="manager-page-actions">
+          <select id="managerPeriodSelect" aria-label="Periode du rapport">
+            <option value="7" ${state.managerPeriod === '7' ? 'selected' : ''}>7 derniers jours</option>
+            <option value="30" ${state.managerPeriod === '30' ? 'selected' : ''}>30 derniers jours</option>
+            <option value="all" ${state.managerPeriod === 'all' ? 'selected' : ''}>Toute la periode</option>
+          </select>
+          <button class="secondary-action" id="managerRefreshBtn" type="button">${icon('refresh-cw')} Actualiser</button>
+        </div>
+      </header>
+      <section class="manager-data-region">
+        ${renderManagerView(state.activeView)}
+      </section>
+    </main>
+  `;
+}
+
+function renderManagerView(view) {
+  if (view === 'manager-sales') return renderManagerSalesView();
+  if (view === 'manager-stock') return renderManagerStockView();
+  if (view === 'manager-reports') return renderManagerReportsView();
+  if (view === 'manager-sessions') return renderManagerSessionsView();
+  return renderManagerOverviewView();
+}
+
+function renderManagerStat(label, value, detail, tone = 'blue', iconName = 'activity') {
+  return `
+    <article class="manager-stat manager-stat-${tone}">
+      <span>${icon(iconName)}</span>
+      <div><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong><em>${escapeHtml(detail)}</em></div>
+    </article>
+  `;
+}
+
+function renderManagerOverviewView() {
+  const metrics = getManagerMetrics();
+  const recentSales = metrics.sales.slice(0, 6);
+  const stockRows = getManagerStockRows().sort((a, b) => a.availableQty - b.availableQty).slice(0, 6);
+  return `
+    <section class="manager-stat-grid">
+      ${renderManagerStat('Ventes aujourd\'hui', formatMoney(metrics.todayRevenue), `${metrics.todaySales.length} transaction(s)`, 'blue', 'trending-up')}
+      ${renderManagerStat('Ventes de la periode', formatMoney(metrics.revenue), `${metrics.sales.length} vente(s)`, 'green', 'receipt-text')}
+      ${renderManagerStat('Articles vendus', String(metrics.itemCount), 'Toutes les caisses', 'gold', 'package-check')}
+      ${renderManagerStat('Stock faible', String(metrics.lowStock.length), 'Produit(s) a surveiller', metrics.lowStock.length ? 'red' : 'green', 'alert-triangle')}
+    </section>
+    <section class="manager-content-grid">
+      <article class="manager-panel manager-panel-wide">
+        <div class="manager-panel-head"><div><p class="eyebrow">Activite</p><h3>Ventes recentes</h3></div><button class="text-action" data-manager-view="manager-sales" type="button">Voir tout ${icon('arrow-right')}</button></div>
+        <div class="manager-table manager-table-compact">
+          <div class="manager-table-row manager-table-header"><span>Reference</span><span>Point de vente</span><span>Date</span><span>Total</span></div>
+          ${recentSales.length ? recentSales.map((sale) => `
+            <div class="manager-table-row"><strong>${escapeHtml(sale.reference || 'Vente caisse')}</strong><span>${escapeHtml(sale.locationName || 'Magasin')}</span><span>${escapeHtml(formatDate(sale.createdAt || sale.completedAt))}</span><b>${escapeHtml(formatMoney(sale.total))}</b></div>
+          `).join('') : renderManagerEmpty('Aucune vente recente', 'Les ventes validees apparaitront ici.', 'receipt-text')}
+        </div>
+      </article>
+      <article class="manager-panel">
+        <div class="manager-panel-head"><div><p class="eyebrow">Inventaire</p><h3>Stock a surveiller</h3></div><button class="text-action" data-manager-view="manager-stock" type="button">Ouvrir ${icon('arrow-right')}</button></div>
+        <div class="manager-watch-list">
+          ${stockRows.length ? stockRows.map((row) => `<div><span>${icon(row.availableQty <= 0 ? 'circle-alert' : 'package')}</span><div><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.locationName)}</small></div><b class="${row.availableQty <= 3 ? 'is-low' : ''}">${escapeHtml(row.availableQty)}</b></div>`).join('') : renderManagerEmpty('Aucun stock disponible', 'Les produits seront affiches apres synchronisation.', 'package-open')}
+        </div>
+      </article>
+    </section>
+    <section class="manager-panel manager-quick-panel">
+      <div class="manager-panel-head"><div><p class="eyebrow">Equipe</p><h3>Sessions actuellement ouvertes</h3></div><button class="text-action" data-manager-view="manager-sessions" type="button">Superviser ${icon('arrow-right')}</button></div>
+      <div class="manager-session-strip">
+        ${metrics.openSessions.length ? metrics.openSessions.slice(0, 4).map((session) => `<span>${icon('circle-dot')} <strong>${escapeHtml(session.openedByName || 'Caissier')}</strong><small>${escapeHtml(session.locationName || 'Magasin')} · ${escapeHtml(formatMoney(session.totalSales))}</small></span>`).join('') : renderManagerEmpty('Aucune session ouverte', 'Aucun caissier n\'est actuellement en service.', 'wallet-cards')}
+      </div>
+    </section>
+  `;
+}
+
+function renderManagerSalesView() {
+  const sales = getManagerSales();
+  return `
+    <article class="manager-panel manager-panel-full">
+      <div class="manager-filter-bar">
+        <label class="manager-search-field">${icon('search')}<input id="managerSearchInput" type="search" value="${escapeHtml(state.managerSearch)}" placeholder="Rechercher une vente, un produit ou un SKU"></label>
+        <span class="manager-result-count">${escapeHtml(sales.length)} vente(s)</span>
+      </div>
+      <div class="manager-table">
+        <div class="manager-table-row manager-table-header"><span>Reference</span><span>Caissier</span><span>Point de vente</span><span>Date</span><span>Articles</span><span>Total</span></div>
+        ${sales.length ? sales.slice(0, 100).map((sale) => `<div class="manager-table-row"><strong>${escapeHtml(sale.reference || 'Vente caisse')}</strong><span>${escapeHtml(sale.createdByName || sale.cashierName || 'Caissier')}</span><span>${escapeHtml(sale.locationName || 'Magasin')}</span><span>${escapeHtml(formatDate(sale.createdAt || sale.completedAt))}</span><span>${escapeHtml(sale.itemCount || 0)}</span><b>${escapeHtml(formatMoney(sale.total))}</b></div>`).join('') : renderManagerEmpty('Aucune vente trouvee', 'Modifiez la periode ou la recherche.', 'receipt-text')}
+      </div>
+    </article>
+  `;
+}
+
+function renderManagerStockView() {
+  const search = normalizeText(state.managerSearch).toLowerCase();
+  const rows = getManagerStockRows().filter((row) => !search || `${row.name} ${row.sku} ${row.locationName}`.toLowerCase().includes(search)).sort((a, b) => a.availableQty - b.availableQty);
+  return `
+    <article class="manager-panel manager-panel-full">
+      <div class="manager-filter-bar">
+        <label class="manager-search-field">${icon('search')}<input id="managerSearchInput" type="search" value="${escapeHtml(state.managerSearch)}" placeholder="Rechercher un produit ou un SKU"></label>
+        <span class="manager-result-count">${escapeHtml(rows.length)} produit(s)</span>
+      </div>
+      <div class="manager-table">
+        <div class="manager-table-row manager-table-header"><span>Produit</span><span>SKU</span><span>Emplacement</span><span>Quantite</span><span>Prix</span><span>Etat</span></div>
+        ${rows.length ? rows.slice(0, 150).map((row) => `<div class="manager-table-row"><strong>${escapeHtml(row.name)}</strong><span>${escapeHtml(row.sku)}</span><span>${escapeHtml(row.locationName)}</span><span>${escapeHtml(row.availableQty)}</span><span>${escapeHtml(formatMoney(row.unitPrice))}</span><b class="stock-status ${row.availableQty <= 3 ? 'is-low' : row.availableQty <= 0 ? 'is-out' : ''}">${row.availableQty <= 0 ? 'Rupture' : row.availableQty <= 3 ? 'Faible' : 'Disponible'}</b></div>`).join('') : renderManagerEmpty('Aucun produit trouve', 'Le catalogue ou les balances de stock ne sont pas disponibles.', 'package-open')}
+      </div>
+    </article>
+  `;
+}
+
+function renderManagerReportsView() {
+  const metrics = getManagerMetrics();
+  const byLocation = new Map();
+  metrics.sales.forEach((sale) => {
+    const label = sale.locationName || 'Magasin';
+    const current = byLocation.get(label) || { total: 0, count: 0 };
+    current.total += toNumber(sale.total);
+    current.count += 1;
+    byLocation.set(label, current);
+  });
+  const locations = [...byLocation.entries()].sort((a, b) => b[1].total - a[1].total);
+  return `
+    <section class="manager-report-grid">
+      <article class="manager-panel"><p class="eyebrow">Performance</p><h3>Resume de la periode</h3><div class="manager-report-total">${escapeHtml(formatMoney(metrics.revenue))}</div><p class="manager-muted">Chiffre d'affaires encaisse sur ${escapeHtml(metrics.sales.length)} transaction(s).</p></article>
+      <article class="manager-panel"><p class="eyebrow">Activite</p><h3>Sessions ouvertes</h3><div class="manager-report-total">${escapeHtml(metrics.openSessions.length)}</div><p class="manager-muted">Caissier(s) actuellement en service.</p></article>
+    </section>
+    <article class="manager-panel manager-panel-full">
+      <div class="manager-panel-head"><div><p class="eyebrow">Repartition</p><h3>Ventes par point de vente</h3></div></div>
+      <div class="manager-location-report">
+        ${locations.length ? locations.map(([label, value]) => `<div><div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value.count)} vente(s)</span></div><div class="manager-bar"><span style="width:${Math.min(100, metrics.revenue ? value.total / metrics.revenue * 100 : 0)}%"></span></div><b>${escapeHtml(formatMoney(value.total))}</b></div>`).join('') : renderManagerEmpty('Aucune donnee de rapport', 'Les ventes apparaitront apres une transaction validee.', 'bar-chart-3')}
+      </div>
+    </article>
+  `;
+}
+
+function renderManagerSessionsView() {
+  const sessions = state.sessions.filter((session) => managerLocationMatches(session)).sort((a, b) => getDateMs(b.openedAt) - getDateMs(a.openedAt));
+  return `
+    <article class="manager-panel manager-panel-full">
+      <div class="manager-filter-bar"><div><p class="eyebrow">Supervision</p><h3>Sessions de caisse</h3></div><span class="manager-result-count">${escapeHtml(sessions.length)} session(s)</span></div>
+      <div class="manager-table">
+        <div class="manager-table-row manager-table-header"><span>Caissier</span><span>Point de vente</span><span>Ouverture</span><span>Ventes</span><span>Total</span><span>Etat</span></div>
+        ${sessions.length ? sessions.slice(0, 100).map((session) => `<div class="manager-table-row"><strong>${escapeHtml(session.openedByName || 'Caissier')}</strong><span>${escapeHtml(session.locationName || 'Magasin')}</span><span>${escapeHtml(formatDate(session.openedAt))}</span><span>${escapeHtml(session.saleCount || 0)}</span><span>${escapeHtml(formatMoney(session.totalSales))}</span><b class="session-status ${String(session.status || 'open').toLowerCase() === 'closed' ? 'closed' : ''}">${String(session.status || 'open').toLowerCase() === 'closed' ? 'Fermee' : 'Ouverte'}</b></div>`).join('') : renderManagerEmpty('Aucune session', 'Aucune session de caisse n\'est enregistree.', 'wallet-cards')}
+      </div>
+    </article>
+  `;
+}
+
+function renderManagerEmpty(title, message, iconName) {
+  return `<div class="manager-empty">${icon(iconName)}<strong>${escapeHtml(title)}</strong><span>${escapeHtml(message)}</span></div>`;
+}
+
+function refreshManagerRegion() {
+  const region = document.querySelector('.manager-data-region');
+  if (!region || !isManager()) return;
+  region.innerHTML = renderManagerView(state.activeView);
+  refreshIcons();
+}
+
+function stockPeriodMatches(value) {
+  const period = String(state.stockPeriod || '30');
+  if (period === 'all') return true;
+  const dateMs = getDateMs(value);
+  if (!dateMs) return false;
+  return dateMs >= Date.now() - Number(period) * 24 * 60 * 60 * 1000;
+}
+
+function getStockMovements() {
+  const search = normalizeText(state.stockSearch).toLowerCase();
+  return state.movements
+    .filter((movement) => stockPeriodMatches(movement.createdAt || movement.occurredAt || movement.updatedAt))
+    .filter((movement) => {
+      if (!search) return true;
+      return [movement.productName, movement.sku, movement.type, movement.reason, movement.locationName]
+        .filter(Boolean).join(' ').toLowerCase().includes(search);
+    })
+    .sort((a, b) => getDateMs(b.createdAt || b.occurredAt || b.updatedAt) - getDateMs(a.createdAt || a.occurredAt || a.updatedAt));
+}
+
+function getStockTransfers() {
+  const search = normalizeText(state.stockSearch).toLowerCase();
+  return state.transfers
+    .filter((transfer) => {
+      if (!search) return true;
+      return [transfer.reference, transfer.fromLocationName, transfer.toLocationName, transfer.status]
+        .filter(Boolean).join(' ').toLowerCase().includes(search);
+    })
+    .sort((a, b) => getDateMs(b.createdAt || b.updatedAt) - getDateMs(a.createdAt || a.updatedAt));
+}
+
+function getStockMetrics() {
+  const rows = getManagerStockRows();
+  const movements = getStockMovements();
+  const transfers = getStockTransfers();
+  return {
+    rows,
+    movements,
+    transfers,
+    totalUnits: rows.reduce((sum, row) => sum + Math.max(0, toNumber(row.availableQty)), 0),
+    lowStock: rows.filter((row) => row.availableQty > 0 && row.availableQty <= 3),
+    outOfStock: rows.filter((row) => row.availableQty <= 0),
+    locations: new Set(rows.map((row) => row.locationName).filter(Boolean)).size,
+  };
+}
+
+function renderStockWorkspace() {
+  const titles = {
+    'stock-overview': 'Vue d\'ensemble stock',
+    'stock-inventory': 'Inventaire',
+    'stock-products': 'Produits',
+    'stock-movements': 'Mouvements de stock',
+    'stock-transfers': 'Transferts',
+    'stock-physical': 'Inventaire physique',
+    'stock-locations': 'Magasins et dépôts',
+    'stock-reports': 'Rapports stock',
+  };
+  return `
+    <main class="manager-workspace stock-workspace">
+      <header class="manager-page-head">
+        <div>
+          <p class="eyebrow">Gestion des stocks</p>
+          <h2>${escapeHtml(titles[state.activeView] || titles['stock-overview'])}</h2>
+          <p>Contrôlez les quantités réelles, les mouvements et les écarts de stock.</p>
+        </div>
+        <div class="manager-page-actions">
+          <select id="stockPeriodSelect" aria-label="Période des mouvements">
+            <option value="7" ${state.stockPeriod === '7' ? 'selected' : ''}>7 derniers jours</option>
+            <option value="30" ${state.stockPeriod === '30' ? 'selected' : ''}>30 derniers jours</option>
+            <option value="all" ${state.stockPeriod === 'all' ? 'selected' : ''}>Toute la période</option>
+          </select>
+          <button class="secondary-action" id="stockRefreshBtn" type="button">${icon('refresh-cw')} Actualiser</button>
+        </div>
+      </header>
+      <section class="manager-data-region stock-data-region">
+        ${renderStockView(state.activeView)}
+      </section>
+    </main>
+  `;
+}
+
+function renderStockView(view) {
+  if (view === 'stock-inventory') return renderStockInventoryView();
+  if (view === 'stock-products') return renderStockProductsView();
+  if (view === 'stock-movements') return renderStockMovementsView();
+  if (view === 'stock-transfers') return renderStockTransfersView();
+  if (view === 'stock-physical') return renderStockPhysicalView();
+  if (view === 'stock-locations') return renderStockLocationsView();
+  if (view === 'stock-reports') return renderStockReportsView();
+  return renderStockOverviewView();
+}
+
+function renderStockOverviewView() {
+  const metrics = getStockMetrics();
+  const alerts = [...metrics.outOfStock, ...metrics.lowStock].sort((a, b) => a.availableQty - b.availableQty).slice(0, 7);
+  return `
+    <section class="manager-stat-grid">
+      ${renderManagerStat('Unités disponibles', String(metrics.totalUnits), 'Stock enregistré', 'blue', 'boxes')}
+      ${renderManagerStat('Produits suivis', String(metrics.rows.length), `${metrics.locations} emplacement(s)`, 'green', 'package-search')}
+      ${renderManagerStat('Stock faible', String(metrics.lowStock.length), 'À réapprovisionner', metrics.lowStock.length ? 'gold' : 'green', 'alert-triangle')}
+      ${renderManagerStat('Ruptures', String(metrics.outOfStock.length), 'Produit(s) indisponible(s)', metrics.outOfStock.length ? 'red' : 'green', 'circle-alert')}
+    </section>
+    <section class="manager-content-grid">
+      <article class="manager-panel manager-panel-wide">
+        <div class="manager-panel-head"><div><p class="eyebrow">Contrôle quotidien</p><h3>Alertes de stock</h3></div><button class="text-action" data-stock-view="stock-inventory" type="button">Voir l'inventaire ${icon('arrow-right')}</button></div>
+        <div class="manager-watch-list">
+          ${alerts.length ? alerts.map((row) => `<div><span>${icon(row.availableQty <= 0 ? 'circle-alert' : 'alert-triangle')}</span><div><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.locationName)} · ${escapeHtml(row.sku)}</small></div><b class="${row.availableQty <= 0 ? 'is-low' : ''}">${row.availableQty <= 0 ? 'Rupture' : `${row.availableQty} restant(s)`}</b></div>`).join('') : renderManagerEmpty('Aucune alerte', 'Les niveaux de stock sont actuellement corrects.', 'badge-check')}
+        </div>
+      </article>
+      <article class="manager-panel">
+        <div class="manager-panel-head"><div><p class="eyebrow">Derniers mouvements</p><h3>Activité stock</h3></div><button class="text-action" data-stock-view="stock-movements" type="button">Tout voir ${icon('arrow-right')}</button></div>
+        <div class="manager-watch-list">
+          ${metrics.movements.slice(0, 5).map((movement) => `<div><span>${icon(toNumber(movement.quantity) < 0 ? 'arrow-down-left' : 'arrow-up-right')}</span><div><strong>${escapeHtml(movement.productName || movement.sku || 'Produit')}</strong><small>${escapeHtml(movement.type || 'Mouvement')} · ${escapeHtml(formatDate(movement.createdAt || movement.occurredAt))}</small></div><b class="${toNumber(movement.quantity) < 0 ? 'is-low' : ''}">${toNumber(movement.quantity) > 0 ? '+' : ''}${escapeHtml(toNumber(movement.quantity))}</b></div>`).join('') || renderManagerEmpty('Aucun mouvement', 'Les entrées et sorties apparaitront ici.', 'arrow-up-down')}
+        </div>
+      </article>
+    </section>
+    <section class="manager-panel manager-quick-panel">
+      <div class="manager-panel-head"><div><p class="eyebrow">Logistique</p><h3>Transferts récents</h3></div><button class="text-action" data-stock-view="stock-transfers" type="button">Superviser ${icon('arrow-right')}</button></div>
+      <div class="manager-session-strip">
+        ${metrics.transfers.slice(0, 4).map((transfer) => `<span>${icon('arrow-right-left')} <strong>${escapeHtml(transfer.reference || 'Transfert')}</strong><small>${escapeHtml(transfer.fromLocationName || 'Origine')} → ${escapeHtml(transfer.toLocationName || 'Destination')} · ${escapeHtml(transfer.status || 'brouillon')}</small></span>`).join('') || renderManagerEmpty('Aucun transfert', 'Les transferts entre emplacements apparaitront ici.', 'arrow-right-left')}
+      </div>
+    </section>
+  `;
+}
+
+function renderStockTableToolbar(count, placeholder) {
+  return `<div class="manager-filter-bar"><label class="manager-search-field">${icon('search')}<input id="stockSearchInput" type="search" value="${escapeHtml(state.stockSearch)}" placeholder="${escapeHtml(placeholder)}"></label><span class="manager-result-count">${escapeHtml(count)} élément(s)</span></div>`;
+}
+
+function renderStockInventoryView() {
+  const search = normalizeText(state.stockSearch).toLowerCase();
+  const rows = getManagerStockRows().filter((row) => !search || `${row.name} ${row.sku} ${row.locationName}`.toLowerCase().includes(search)).sort((a, b) => a.availableQty - b.availableQty);
+  return `<article class="manager-panel manager-panel-full">${renderStockTableToolbar(rows.length, 'Rechercher un produit, SKU ou emplacement')}<div class="manager-table"><div class="manager-table-row manager-table-header"><span>Produit</span><span>SKU</span><span>Emplacement</span><span>Quantité</span><span>Prix</span><span>État</span></div>${rows.length ? rows.slice(0, 200).map((row) => `<div class="manager-table-row"><strong>${escapeHtml(row.name)}</strong><span>${escapeHtml(row.sku)}</span><span>${escapeHtml(row.locationName)}</span><span>${escapeHtml(row.availableQty)}</span><span>${escapeHtml(formatMoney(row.unitPrice))}</span><b class="stock-status ${row.availableQty <= 0 ? 'is-out' : row.availableQty <= 3 ? 'is-low' : ''}">${row.availableQty <= 0 ? 'Rupture' : row.availableQty <= 3 ? 'Faible' : 'Disponible'}</b></div>`).join('') : renderManagerEmpty('Aucun stock trouvé', 'Aucun produit ne correspond à votre recherche.', 'package-open')}</div></article>`;
+}
+
+function renderStockProductsView() {
+  const search = normalizeText(state.stockSearch).toLowerCase();
+  const products = state.products.filter((product) => getProductStatus(product) !== 'inactive' && !isDigitalProduct(product)).filter((product) => !search || `${getProductName(product)} ${product.sku || ''}`.toLowerCase().includes(search));
+  return `<article class="manager-panel manager-panel-full">${renderStockTableToolbar(products.length, 'Rechercher un produit ou un SKU')}<div class="manager-table"><div class="manager-table-row manager-table-header"><span>Produit</span><span>SKU</span><span>Catégorie</span><span>Stock catalogue</span><span>Prix</span><span>Statut</span></div>${products.length ? products.slice(0, 200).map((product) => `<div class="manager-table-row"><strong>${escapeHtml(getProductName(product))}</strong><span>${escapeHtml(product.sku || '-')}</span><span>${escapeHtml(product.categoryName || product.category || 'Sans catégorie')}</span><span>${escapeHtml(getProductStock(product))}</span><span>${escapeHtml(formatMoney(getProductSalePrice(product)))}</span><b class="stock-status">Actif</b></div>`).join('') : renderManagerEmpty('Aucun produit trouvé', 'Le catalogue produit est vide ou ne correspond pas à la recherche.', 'package-open')}</div></article>`;
+}
+
+function renderStockMovementsView() {
+  const movements = getStockMovements();
+  return `<article class="manager-panel manager-panel-full">${renderStockTableToolbar(movements.length, 'Rechercher un mouvement, produit ou SKU')}<div class="manager-table"><div class="manager-table-row manager-table-header"><span>Date</span><span>Produit</span><span>Type</span><span>Emplacement</span><span>Quantité</span><span>Raison</span></div>${movements.length ? movements.slice(0, 200).map((movement) => `<div class="manager-table-row"><strong>${escapeHtml(formatDate(movement.createdAt || movement.occurredAt || movement.updatedAt))}</strong><span>${escapeHtml(movement.productName || movement.sku || '-')}</span><span>${escapeHtml(movement.type || 'Mouvement')}</span><span>${escapeHtml(movement.locationName || 'Magasin')}</span><b class="${toNumber(movement.quantity) < 0 ? 'stock-status is-low' : 'stock-status'}">${toNumber(movement.quantity) > 0 ? '+' : ''}${escapeHtml(toNumber(movement.quantity))}</b><span>${escapeHtml(movement.reason || movement.note || '-')}</span></div>`).join('') : renderManagerEmpty('Aucun mouvement trouvé', 'Les mouvements de stock de la période apparaitront ici.', 'arrow-up-down')}</div></article>`;
+}
+
+function renderStockTransfersView() {
+  const transfers = getStockTransfers();
+  return `<article class="manager-panel manager-panel-full">${renderStockTableToolbar(transfers.length, 'Rechercher un transfert ou un emplacement')}<div class="manager-table"><div class="manager-table-row manager-table-header"><span>Référence</span><span>Origine</span><span>Destination</span><span>Créé le</span><span>Unités</span><span>Statut</span></div>${transfers.length ? transfers.slice(0, 150).map((transfer) => `<div class="manager-table-row"><strong>${escapeHtml(transfer.reference || transfer.id)}</strong><span>${escapeHtml(transfer.fromLocationName || '-')}</span><span>${escapeHtml(transfer.toLocationName || '-')}</span><span>${escapeHtml(formatDate(transfer.createdAt || transfer.updatedAt))}</span><span>${escapeHtml(transfer.totalUnits || transfer.quantity || 0)}</span><b class="stock-status">${escapeHtml(transfer.status || 'Brouillon')}</b></div>`).join('') : renderManagerEmpty('Aucun transfert', 'Les transferts entre magasins et dépôts apparaitront ici.', 'arrow-right-left')}</div></article>`;
+}
+
+function renderStockPhysicalView() {
+  const metrics = getStockMetrics();
+  const adjustments = state.movements.filter((movement) => String(movement.type || '').toUpperCase().includes('ADJUST')).slice(0, 30);
+  return `<section class="manager-content-grid"><article class="manager-panel manager-panel-wide"><div class="manager-panel-head"><div><p class="eyebrow">Contrôle réel</p><h3>Inventaire physique</h3></div><span class="manager-result-count">${escapeHtml(metrics.rows.length)} ligne(s) de stock</span></div><p class="manager-muted">Comparez les quantités comptées sur place avec les quantités du système. Les corrections validées sont conservées dans les mouvements de stock.</p><div class="manager-report-total">${escapeHtml(metrics.totalUnits)} unités</div><p class="manager-muted">Unités actuellement enregistrées dans les emplacements suivis.</p></article><article class="manager-panel"><div class="manager-panel-head"><div><p class="eyebrow">Historique</p><h3>Derniers écarts</h3></div></div><div class="manager-watch-list">${adjustments.length ? adjustments.map((movement) => `<div><span>${icon('clipboard-check')}</span><div><strong>${escapeHtml(movement.productName || movement.sku || 'Produit')}</strong><small>${escapeHtml(formatDate(movement.createdAt || movement.updatedAt))}</small></div><b class="${toNumber(movement.quantity) < 0 ? 'is-low' : ''}">${toNumber(movement.quantity) > 0 ? '+' : ''}${escapeHtml(toNumber(movement.quantity))}</b></div>`).join('') : renderManagerEmpty('Aucun écart récent', 'Les ajustements physiques apparaitront ici.', 'clipboard-check')}</div></article></section>`;
+}
+
+function renderStockLocationsView() {
+  const locations = getActiveLocations();
+  const rows = locations.map((location) => ({ location, total: getManagerStockRows().filter((row) => row.locationName === location.name).reduce((sum, row) => sum + Math.max(0, row.availableQty), 0) }));
+  return `<article class="manager-panel manager-panel-full"><div class="manager-panel-head"><div><p class="eyebrow">Emplacements</p><h3>Magasins et dépôts</h3></div><span class="manager-result-count">${escapeHtml(locations.length)} actif(s)</span></div><div class="manager-table"><div class="manager-table-row manager-table-header"><span>Nom</span><span>Type</span><span>Ville</span><span>Unités suivies</span><span>Statut</span></div>${rows.length ? rows.map(({ location, total }) => `<div class="manager-table-row"><strong>${escapeHtml(location.name || 'Emplacement')}</strong><span>${escapeHtml(location.type || 'store')}</span><span>${escapeHtml(location.city || location.address || '-')}</span><span>${escapeHtml(total)}</span><b class="stock-status">Actif</b></div>`).join('') : renderManagerEmpty('Aucun emplacement actif', 'Les magasins et dépôts apparaitront après configuration.', 'warehouse')}</div></article>`;
+}
+
+function renderStockReportsView() {
+  const metrics = getStockMetrics();
+  const byLocation = new Map();
+  metrics.rows.forEach((row) => byLocation.set(row.locationName, (byLocation.get(row.locationName) || 0) + Math.max(0, row.availableQty)));
+  const locations = [...byLocation.entries()].sort((a, b) => b[1] - a[1]);
+  const max = Math.max(1, ...locations.map(([, total]) => total));
+  return `<section class="manager-report-grid"><article class="manager-panel"><p class="eyebrow">Synthèse</p><h3>Stock disponible</h3><div class="manager-report-total">${escapeHtml(metrics.totalUnits)} unités</div><p class="manager-muted">${escapeHtml(metrics.rows.length)} ligne(s) de stock suivie(s).</p></article><article class="manager-panel"><p class="eyebrow">Qualité stock</p><h3>Alertes à traiter</h3><div class="manager-report-total">${escapeHtml(metrics.lowStock.length + metrics.outOfStock.length)}</div><p class="manager-muted">Stock faible ou en rupture.</p></article></section><article class="manager-panel manager-panel-full"><div class="manager-panel-head"><div><p class="eyebrow">Répartition</p><h3>Unités par emplacement</h3></div></div><div class="manager-location-report">${locations.length ? locations.map(([label, total]) => `<div><div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(total)} unité(s)</span></div><div class="manager-bar"><span style="width:${Math.min(100, total / max * 100)}%"></span></div></div>`).join('') : renderManagerEmpty('Aucune donnée stock', 'Les rapports apparaitront après synchronisation.', 'bar-chart-3')}</div></article>`;
+}
+
+function refreshStockRegion() {
+  const region = document.querySelector('.stock-data-region');
+  if (!region || !isStockManager()) return;
+  region.innerHTML = renderStockView(state.activeView);
+  refreshIcons();
+}
+
 function renderApp() {
   if (!state.user) return renderLogin();
   if (!state.profile || !canUseCaisse(state.profile)) return renderForbidden();
   if (state.loading) return renderLoading();
 
   const selected = getSelectedLocation();
-  const session = getOpenSession();
+  const manager = isManager();
+  const stockManager = isStockManager();
+  const session = isBackOfficeRole() ? null : getOpenSession();
   root.innerHTML = `
     <section class="cashier-app ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}">
       ${renderSidebar(session)}
       <div class="cashier-main">
         ${renderHeader(selected, session)}
-      ${renderSellingScreen(selected, session)}
+      ${manager ? renderManagerWorkspace() : stockManager ? renderStockWorkspace() : renderSellingScreen(selected, session)}
       </div>
       ${renderNotice()}
       ${state.closeSessionModal && session ? renderCloseSessionModal(session) : ''}
@@ -710,6 +1212,59 @@ function renderLoading() {
 }
 
 function renderSidebar(session) {
+  if (isManager()) {
+    return `
+      <aside class="cashier-sidebar manager-sidebar" aria-label="Navigation manager">
+        <div class="sidebar-rail">
+          <button class="rail-logo fullscreen-toggle" id="fullscreenToggleBtn" type="button" aria-label="Ouvrir en plein ecran" title="Ouvrir en plein ecran">
+            ${icon('maximize-2')}
+          </button>
+        </div>
+        <div class="sidebar-panel">
+          <div class="sidebar-title">
+            <strong>Smart Cut</strong>
+            <small>Gestion boutique</small>
+          </div>
+          <nav class="sidebar-nav">
+            <button class="${state.activeView === 'manager-overview' ? 'active' : ''}" data-manager-view="manager-overview" type="button">${icon('layout-dashboard')}<span>Vue d'ensemble</span></button>
+            <button class="${state.activeView === 'manager-sales' ? 'active' : ''}" data-manager-view="manager-sales" type="button">${icon('receipt-text')}<span>Ventes</span></button>
+            <button class="${state.activeView === 'manager-stock' ? 'active' : ''}" data-manager-view="manager-stock" type="button">${icon('package-search')}<span>Stock</span></button>
+            <button class="${state.activeView === 'manager-reports' ? 'active' : ''}" data-manager-view="manager-reports" type="button">${icon('chart-no-axes-combined')}<span>Rapports</span></button>
+            <button class="${state.activeView === 'manager-sessions' ? 'active' : ''}" data-manager-view="manager-sessions" type="button">${icon('wallet-cards')}<span>Sessions de caisse</span></button>
+            <button id="sidebarLogoutBtn" type="button">${icon('log-out')}<span>Deconnexion</span></button>
+          </nav>
+        </div>
+      </aside>
+    `;
+  }
+  if (isStockManager()) {
+    return `
+      <aside class="cashier-sidebar manager-sidebar stock-sidebar" aria-label="Navigation responsable stock">
+        <div class="sidebar-rail">
+          <button class="rail-logo fullscreen-toggle" id="fullscreenToggleBtn" type="button" aria-label="Ouvrir en plein écran" title="Ouvrir en plein écran">
+            ${icon('maximize-2')}
+          </button>
+        </div>
+        <div class="sidebar-panel">
+          <div class="sidebar-title">
+            <strong>Smart Cut</strong>
+            <small>Gestion des stocks</small>
+          </div>
+          <nav class="sidebar-nav">
+            <button class="${state.activeView === 'stock-overview' ? 'active' : ''}" data-stock-view="stock-overview" type="button">${icon('layout-dashboard')}<span>Vue d'ensemble</span></button>
+            <button class="${state.activeView === 'stock-inventory' ? 'active' : ''}" data-stock-view="stock-inventory" type="button">${icon('boxes')}<span>Inventaire</span></button>
+            <button class="${state.activeView === 'stock-products' ? 'active' : ''}" data-stock-view="stock-products" type="button">${icon('package-search')}<span>Produits</span></button>
+            <button class="${state.activeView === 'stock-movements' ? 'active' : ''}" data-stock-view="stock-movements" type="button">${icon('arrow-up-down')}<span>Mouvements</span></button>
+            <button class="${state.activeView === 'stock-transfers' ? 'active' : ''}" data-stock-view="stock-transfers" type="button">${icon('arrow-right-left')}<span>Transferts</span></button>
+            <button class="${state.activeView === 'stock-physical' ? 'active' : ''}" data-stock-view="stock-physical" type="button">${icon('clipboard-check')}<span>Inventaire physique</span></button>
+            <button class="${state.activeView === 'stock-locations' ? 'active' : ''}" data-stock-view="stock-locations" type="button">${icon('warehouse')}<span>Magasins et dépôts</span></button>
+            <button class="${state.activeView === 'stock-reports' ? 'active' : ''}" data-stock-view="stock-reports" type="button">${icon('chart-column')}<span>Rapports stock</span></button>
+            <button id="sidebarLogoutBtn" type="button">${icon('log-out')}<span>Déconnexion</span></button>
+          </nav>
+        </div>
+      </aside>
+    `;
+  }
   return `
     <aside class="cashier-sidebar" aria-label="Navigation caisse">
       <div class="sidebar-rail">
@@ -744,8 +1299,10 @@ function renderSidebar(session) {
 function renderHeader(selected, session) {
   const role = getRole(state.profile || {}) || 'caissier';
   const displayName = getDisplayName();
+  const manager = isManager();
+  const stockManager = isStockManager();
   return `
-    <header class="cashier-header">
+    <header class="cashier-header ${isBackOfficeRole() ? 'manager-header' : ''}">
       <div class="header-brand">
         <button class="sidebar-toggle" id="sidebarToggleBtn" type="button" aria-label="Afficher ou masquer le menu">${icon('panel-left')}</button>
         <span class="time-chip">
@@ -753,12 +1310,12 @@ function renderHeader(selected, session) {
           <strong>${escapeHtml(formatClockLabel())}</strong>
         </span>
         <div>
-          <h1>Interface de Caisse</h1>
+          <h1>${manager ? 'Espace Manager' : stockManager ? 'Espace Responsable stock' : 'Interface de Caisse'}</h1>
         </div>
       </div>
       <label class="top-search">
         ${icon('search')}
-        <input id="searchInput" type="search" value="${escapeHtml(state.search)}" placeholder="Rechercher par nom ou SKU">
+        <input id="searchInput" type="search" value="${escapeHtml(state.search)}" placeholder="${isBackOfficeRole() ? 'Recherche globale' : 'Rechercher par nom ou SKU'}" ${isBackOfficeRole() ? 'disabled' : ''}>
         <kbd>Ctrl + K</kbd>
       </label>
       <div class="header-actions">
@@ -1470,6 +2027,16 @@ function bindAppEvents() {
     state.sidebarCollapsed = !state.sidebarCollapsed;
     renderApp();
   });
+  document.getElementById('managerPeriodSelect')?.addEventListener('change', (event) => {
+    state.managerPeriod = event.target.value || '30';
+    refreshManagerRegion();
+  });
+  document.getElementById('managerRefreshBtn')?.addEventListener('click', loadWorkspace);
+  document.getElementById('stockPeriodSelect')?.addEventListener('change', (event) => {
+    state.stockPeriod = event.target.value || '30';
+    refreshStockRegion();
+  });
+  document.getElementById('stockRefreshBtn')?.addEventListener('click', loadWorkspace);
   document.getElementById('cashierModeBtn')?.addEventListener('click', () => {
     state.activeView = 'register';
     renderApp();
@@ -1526,6 +2093,22 @@ function bindRegisterEvents() {
     if (!(event.target instanceof Element)) return;
     const target = event.target.closest('button');
     if (!target) return;
+
+    const managerViewButton = target.closest('[data-manager-view]');
+    if (managerViewButton) {
+      state.activeView = managerViewButton.dataset.managerView || 'manager-overview';
+      state.managerSearch = '';
+      renderApp();
+      return;
+    }
+
+    const stockViewButton = target.closest('[data-stock-view]');
+    if (stockViewButton) {
+      state.activeView = stockViewButton.dataset.stockView || 'stock-overview';
+      state.stockSearch = '';
+      renderApp();
+      return;
+    }
 
     const addButton = target.closest('[data-add]');
     if (addButton) {
@@ -1631,6 +2214,28 @@ function bindRegisterEvents() {
 
   root.addEventListener('input', (event) => {
     const target = event.target;
+    if (target.matches('#managerSearchInput')) {
+      state.managerSearch = target.value || '';
+      const cursor = target.selectionStart;
+      refreshManagerRegion();
+      requestAnimationFrame(() => {
+        const input = document.getElementById('managerSearchInput');
+        input?.focus();
+        if (input && cursor !== null) input.setSelectionRange(cursor, cursor);
+      });
+      return;
+    }
+    if (target.matches('#stockSearchInput')) {
+      state.stockSearch = target.value || '';
+      const cursor = target.selectionStart;
+      refreshStockRegion();
+      requestAnimationFrame(() => {
+        const input = document.getElementById('stockSearchInput');
+        input?.focus();
+        if (input && cursor !== null) input.setSelectionRange(cursor, cursor);
+      });
+      return;
+    }
     if (target.matches('#discountRequestedInput')) {
       state.discountRequested = target.value || '';
       return;
@@ -2308,6 +2913,14 @@ async function bootstrap() {
         renderForbidden();
         return;
       }
+      const role = getRole(state.profile || {});
+      state.activeView = role === 'manager'
+        ? 'manager-overview'
+        : role === 'stock_manager'
+          ? 'stock-overview'
+          : 'register';
+      state.managerSearch = '';
+      state.stockSearch = '';
       await loadWorkspace();
     } catch (error) {
       root.innerHTML = `
