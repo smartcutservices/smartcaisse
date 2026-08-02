@@ -29,6 +29,15 @@ firebaseState.db = db;
 export const auth = firebaseState.auth || getAuth(app);
 firebaseState.auth = auth;
 
+// Use an isolated in-memory Auth instance for privileged actions such as
+// authorizing a cashier discount. It never replaces the cashier session.
+const adminCheckApp = firebaseState.adminCheckApp || initializeApp(firebaseConfig, 'smart-caisse-admin-check');
+firebaseState.adminCheckApp = adminCheckApp;
+export const adminCheckAuth = firebaseState.adminCheckAuth || getAuth(adminCheckApp);
+firebaseState.adminCheckAuth = adminCheckAuth;
+export const adminCheckDb = firebaseState.adminCheckDb || getFirestore(adminCheckApp);
+firebaseState.adminCheckDb = adminCheckDb;
+
 async function configurePersistence() {
   const modes = [browserLocalPersistence, browserSessionPersistence, inMemoryPersistence];
   for (const mode of modes) {
@@ -41,3 +50,6 @@ async function configurePersistence() {
 
 export const authReadyPromise = firebaseState.authReadyPromise || configurePersistence();
 firebaseState.authReadyPromise = authReadyPromise;
+
+export const adminCheckReadyPromise = firebaseState.adminCheckReadyPromise || setPersistence(adminCheckAuth, inMemoryPersistence);
+firebaseState.adminCheckReadyPromise = adminCheckReadyPromise;

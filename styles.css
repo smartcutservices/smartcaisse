@@ -14524,12 +14524,25 @@ body,
   justify-self: stretch !important;
   width: auto !important;
   min-width: 0 !important;
+  min-height: 0 !important;
   margin: 0 !important;
-  padding: 12px 14px !important;
+  padding: 8px 14px !important;
   border: 1px solid #e2e8f0 !important;
   border-left: 1px solid #e2e8f0 !important;
   border-radius: 12px !important;
   background: #f8fafc !important;
+  overflow: visible !important;
+  align-content: center !important;
+}
+
+.pos-bottom-tools .payment-card > .totals-card > div {
+  min-height: 19px !important;
+  line-height: 1.15 !important;
+}
+
+.pos-bottom-tools .payment-card > .totals-card > .grand {
+  min-height: 28px !important;
+  padding: 4px 0 !important;
 }
 
 .pos-bottom-tools .payment-card > .checkout-btn {
@@ -14549,6 +14562,524 @@ body,
     grid-template-columns: minmax(165px, 1fr) minmax(205px, 1.15fr) minmax(150px, 0.9fr) !important;
     gap: 12px !important;
     padding: 14px !important;
+  }
+}
+
+/* Admin-authorized discount flow: keep the cashier bar compact and explicit. */
+.pos-bottom-tools .payment-card {
+  grid-template-columns: minmax(175px, 0.95fr) minmax(195px, 1fr) minmax(220px, 1.15fr) minmax(210px, 0.95fr) !important;
+  grid-template-areas: "discount received totals checkout" !important;
+  gap: 14px !important;
+}
+
+.pos-bottom-tools .payment-card > .discount-fields,
+.pos-bottom-tools .payment-card > .received-fields {
+  display: flex !important;
+  align-self: center !important;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.pos-bottom-tools .payment-card > .discount-fields {
+  grid-area: discount !important;
+}
+
+.pos-bottom-tools .payment-card > .received-fields {
+  grid-area: received !important;
+}
+
+.pos-bottom-tools .payment-card > .discount-fields label,
+.pos-bottom-tools .payment-card > .received-fields label {
+  display: grid !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  gap: 8px !important;
+  margin: 0 !important;
+}
+
+.pos-bottom-tools .payment-card > .discount-fields label > span,
+.pos-bottom-tools .payment-card > .received-fields label > span {
+  color: #334155 !important;
+  font-size: 0.78rem !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+}
+
+.discount-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.pos-bottom-tools .payment-card > .discount-fields input,
+.pos-bottom-tools .payment-card > .received-fields input {
+  width: 100% !important;
+  min-height: 52px !important;
+  box-sizing: border-box !important;
+  padding: 0 14px !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 12px !important;
+  background: #fff !important;
+  color: #0f172a !important;
+  font-size: 1rem !important;
+  font-weight: 750 !important;
+  box-shadow: none !important;
+}
+
+.pos-bottom-tools .payment-card > .discount-fields input[readonly] {
+  cursor: not-allowed;
+  background: #f8fafc !important;
+  color: #64748b !important;
+}
+
+.discount-authorize-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 52px;
+  padding: 0 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.discount-authorize-btn:hover {
+  background: #dbeafe;
+}
+
+.discount-authorize-btn.authorized {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.discount-authorize-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.discount-auth-hint {
+  color: #64748b !important;
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+.discount-authorization-modal {
+  position: relative;
+  display: grid;
+  gap: 14px;
+  width: min(440px, 100%);
+  padding: 28px;
+  border: 1px solid #dbe3ef;
+  border-radius: 20px;
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24);
+}
+
+.discount-authorization-modal .modal-close {
+  color: #475569;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.discount-modal-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.discount-modal-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.discount-authorization-modal h2,
+.discount-authorization-modal p {
+  margin: 0;
+}
+
+.discount-authorization-modal h2 {
+  color: #0f172a;
+  font-size: 1.55rem;
+  letter-spacing: -0.03em;
+}
+
+.discount-authorization-modal .eyebrow {
+  color: #2563eb !important;
+}
+
+.discount-modal-copy {
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.discount-authorization-modal label {
+  display: grid;
+  gap: 7px;
+}
+
+.discount-authorization-modal label > span {
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.discount-authorization-modal input {
+  width: 100%;
+  min-height: 48px;
+  box-sizing: border-box;
+  padding: 0 13px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #0f172a;
+  outline: none;
+}
+
+.discount-authorization-modal input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px #dbeafe;
+}
+
+.discount-authorization-modal .form-error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.discount-modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.discount-modal-actions button {
+  min-height: 48px;
+}
+
+.discount-modal-actions .primary-action {
+  background: #2563eb;
+  color: #fff;
+}
+
+@media (max-width: 1260px) and (min-width: 901px) {
+  .pos-bottom-tools .payment-card {
+    grid-template-columns: minmax(150px, 0.95fr) minmax(165px, 1fr) minmax(190px, 1.1fr) minmax(155px, 0.9fr) !important;
+    gap: 10px !important;
+  }
+
+  .discount-authorize-btn {
+    padding: 0 8px;
+  }
+
+  .discount-authorize-btn span {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .pos-bottom-tools .payment-card {
+    grid-template-columns: 1fr !important;
+    grid-template-areas: "discount" "received" "totals" "checkout" !important;
+    grid-template-rows: auto !important;
+    min-height: 0 !important;
+  }
+
+  .discount-authorization-modal {
+    padding: 22px;
+  }
+}
+
+/* Recent sales workspace: replace the register without carrying the cart layout. */
+.recent-sales-page {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  padding: clamp(20px, 3vw, 42px);
+  background: #f8fafc;
+}
+
+.recent-sales-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  max-width: 1120px;
+  margin: 0 auto 22px;
+}
+
+.recent-sales-page-head h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: clamp(1.7rem, 3vw, 2.45rem);
+  letter-spacing: -0.04em;
+}
+
+.recent-sales-page-subtitle {
+  max-width: 560px;
+  margin: 8px 0 0;
+  color: #64748b;
+  font-size: 0.94rem;
+}
+
+.recent-back-btn {
+  flex: 0 0 auto;
+  min-height: 44px;
+  border: 1px solid #bfdbfe !important;
+  border-radius: 10px !important;
+  background: #ffffff !important;
+  color: #1d4ed8 !important;
+  box-shadow: none !important;
+}
+
+.recent-back-btn:hover {
+  background: #eff6ff !important;
+  border-color: #2563eb !important;
+}
+
+.recent-sales-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  max-width: 1120px;
+  margin: 0 auto 18px;
+}
+
+.recent-sales-summary article {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #dbe3ef;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
+}
+
+.recent-sales-summary article > span {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.recent-sales-summary small,
+.recent-sales-summary strong {
+  display: block;
+}
+
+.recent-sales-summary small {
+  color: #64748b;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.recent-sales-summary strong {
+  margin-top: 3px;
+  color: #0f172a;
+  font-size: 1.1rem;
+}
+
+.recent-sales-page-card {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 20px;
+  border: 1px solid #dbe3ef;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.recent-sales-page-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.recent-sales-page-card-head h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 1.08rem;
+}
+
+.recent-sales-page-card-head p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.recent-sales-page-card-head .ghost-action {
+  min-height: 40px;
+  border: 1px solid #dbeafe !important;
+  border-radius: 9px !important;
+  background: #ffffff !important;
+  color: #1d4ed8 !important;
+  box-shadow: none !important;
+}
+
+.recent-sales-page-list {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+}
+
+.recent-sale-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.recent-sale-row:hover {
+  border-color: #93c5fd;
+  background: #f8fbff;
+}
+
+.recent-sale-status {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.recent-sale-main,
+.recent-sale-meta {
+  min-width: 0;
+}
+
+.recent-sale-main strong,
+.recent-sale-main small,
+.recent-sale-meta small,
+.recent-sale-meta b {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-sale-main strong {
+  color: #0f172a;
+  font-size: 0.92rem;
+}
+
+.recent-sale-main small,
+.recent-sale-meta small {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 0.76rem;
+}
+
+.recent-sale-meta {
+  text-align: right;
+}
+
+.recent-sale-meta b {
+  margin-top: 4px;
+  color: #1d4ed8;
+  font-size: 0.96rem;
+}
+
+.recent-sales-page-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 56px 20px;
+  color: #64748b;
+  text-align: center;
+}
+
+.recent-sales-page-empty svg {
+  width: 34px;
+  height: 34px;
+  color: #2563eb;
+}
+
+.recent-sales-page-empty strong {
+  color: #0f172a;
+  font-size: 1rem;
+}
+
+.recent-sales-page-empty span {
+  font-size: 0.84rem;
+}
+
+@media (max-width: 680px) {
+  .recent-sales-page {
+    padding: 18px 14px 28px;
+  }
+
+  .recent-sales-page-head {
+    display: grid;
+    gap: 14px;
+  }
+
+  .recent-back-btn {
+    justify-self: start;
+  }
+
+  .recent-sales-summary {
+    gap: 10px;
+  }
+
+  .recent-sales-summary article {
+    padding: 12px;
+  }
+
+  .recent-sales-page-card {
+    padding: 14px;
+  }
+
+  .recent-sales-page-card-head {
+    align-items: flex-start;
+  }
+
+  .recent-sales-page-card-head .ghost-action {
+    padding: 0 10px;
+  }
+
+  .recent-sale-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .recent-sale-meta {
+    grid-column: 2;
+    text-align: left;
   }
 }
 
@@ -15731,6 +16262,39 @@ body,
     border-top: 1px solid #e9edf3;
     border-left: 0;
   }
+}
+
+/* Keep the cash balance visible in the fixed payment bar. The final amount
+   row must never be clipped by the compact desktop grid. */
+.pos-bottom-tools .payment-card > .totals-card {
+  min-height: 0 !important;
+  overflow: visible !important;
+  align-content: center !important;
+  gap: 3px !important;
+}
+
+.pos-bottom-tools .payment-card > .totals-card > div {
+  min-height: 18px !important;
+  line-height: 1.15 !important;
+}
+
+.pos-bottom-tools .payment-card > .totals-card > .grand {
+  min-height: 27px !important;
+  margin-top: 2px !important;
+  padding-top: 5px !important;
+}
+
+.pos-bottom-tools .payment-card > .totals-card > div:last-child {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  min-height: 22px !important;
+  color: #14213a !important;
+}
+
+.pos-bottom-tools .payment-card > .totals-card > div:last-child > span,
+.pos-bottom-tools .payment-card > .totals-card > div:last-child > strong {
+  color: #14213a !important;
 }
 
 /* Final cart surface: quiet Apple-like hierarchy, no heavy grey pill. */

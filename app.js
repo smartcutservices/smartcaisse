@@ -1,4 +1,4 @@
-import { auth, authReadyPromise, db } from './firebase-init.js?v=20260801-44';
+import { adminCheckAuth, adminCheckDb, adminCheckReadyPromise, auth, authReadyPromise, db } from './firebase-init.js?v=20260801-45';
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -18,7 +18,7 @@ import {
   updateDoc,
 } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js';
 
-const APP_VERSION = '20260801-50';
+const APP_VERSION = '20260801-55';
 const LOCATION_COLLECTION = 'smartManagementLocations';
 const PRODUCT_COLLECTION = 'products';
 const CATEGORY_COLLECTION = 'categories_list';
@@ -50,14 +50,20 @@ const state = {
   clientSearch: '',
   keypadBuffer: '',
   paymentMethod: 'cash',
-  discountType: 'fixed',
+  discountType: 'percent',
   discount: 0,
   amountPaid: 0,
   lastSale: null,
   notice: null,
   closeSessionModal: false,
   closingAmount: '',
+  discountModalOpen: false,
+  discountAuthorized: false,
+  discountAdminEmail: '',
+  discountRequested: '',
+  discountAuthError: '',
   sidebarCollapsed: false,
+  activeView: 'register',
   loading: false,
 };
 
@@ -558,9 +564,12 @@ function getCatalogItems() {
 function getCartTotals() {
   const subtotal = state.cart.reduce((sum, item) => sum + toNumber(item.unitPrice) * toNumber(item.quantity), 0);
   // The cashier flow accepts the exact product total; discounts are not part of this screen.
-  const discount = 0;
+  const requestedDiscount = Math.min(100, Math.max(0, toNumber(state.discount)));
+  const discount = state.discountAuthorized && state.discountType === 'percent'
+    ? Math.min(subtotal, subtotal * requestedDiscount / 100)
+    : 0;
   const tax = 0;
-  const total = Math.max(0, subtotal + tax);
+  const total = Math.max(0, subtotal + tax - discount);
   const amountPaid = toNumber(state.amountPaid);
   return {
     subtotal,
@@ -681,10 +690,11 @@ function renderApp() {
       ${renderSidebar(session)}
       <div class="cashier-main">
         ${renderHeader(selected, session)}
-        ${renderSellingScreen(selected, session)}
+      ${renderSellingScreen(selected, session)}
       </div>
       ${renderNotice()}
       ${state.closeSessionModal && session ? renderCloseSessionModal(session) : ''}
+      ${state.discountModalOpen ? renderDiscountAuthorizationModal() : ''}
     </section>
   `;
   bindAppEvents();
@@ -713,6 +723,14 @@ function renderSidebar(session) {
           <small>Caisse boutique</small>
         </div>
         <nav class="sidebar-nav">
+          <button id="cashierModeBtn" class="${state.activeView === 'register' ? 'active' : ''}" type="button">
+            ${icon('shopping-cart')}
+            <span>Caisse</span>
+          </button>
+          <button id="recentSalesBtn" class="${state.activeView === 'recent-sales' ? 'active' : ''}" type="button">
+            ${icon('history')}
+            <span>Récents</span>
+          </button>
           <button id="sidebarLogoutBtn" type="button">
             ${icon('log-out')}
             <span>Déconnexion</span>
@@ -795,6 +813,8 @@ function renderStatusRail(selected, session) {
 }
 
 function renderSellingScreen(selected, session) {
+  if (state.activeView === 'recent-sales') return renderRecentSalesScreen();
+
   const items = getCatalogItems();
   const totals = getCartTotals();
   const displayTotals = getCartTotals();
@@ -828,6 +848,69 @@ function renderSellingScreen(selected, session) {
           <span class="automatic-session-note">${icon('zap')} Caisse ouverte automatiquement</span>
         </div>
       </aside>
+    </main>
+  `;
+}
+
+function renderRecentSalesScreen() {
+  const sales = state.sales
+    .filter((sale) => sale.status !== 'failed')
+    .sort((a, b) => getDateMs(b.createdAt) - getDateMs(a.createdAt));
+  const visibleSales = sales.slice(0, 25);
+  const total = visibleSales.reduce((sum, sale) => sum + toNumber(sale.total), 0);
+
+  return `
+    <main class="recent-sales-page">
+      <header class="recent-sales-page-head">
+        <div>
+          <p class="eyebrow">Historique caisse</p>
+          <h2>Ventes récentes</h2>
+          <p class="recent-sales-page-subtitle">Retrouvez les dernières ventes enregistrées depuis cette caisse.</p>
+        </div>
+        <button class="secondary-action recent-back-btn" id="backToRegisterBtn" type="button">
+          ${icon('arrow-left')} Retour à la caisse
+        </button>
+      </header>
+      <section class="recent-sales-summary" aria-label="Résumé des ventes récentes">
+        <article>
+          <span>${icon('receipt-text')}</span>
+          <div><small>Ventes affichées</small><strong>${escapeHtml(visibleSales.length)}</strong></div>
+        </article>
+        <article>
+          <span>${icon('banknote')}</span>
+          <div><small>Total encaissé</small><strong>${escapeHtml(formatMoney(total))}</strong></div>
+        </article>
+      </section>
+      <section class="recent-sales-page-card">
+        <div class="recent-sales-page-card-head">
+          <div>
+            <h3>Dernières transactions</h3>
+            <p>Les ventes les plus récentes apparaissent en premier.</p>
+          </div>
+          <button class="ghost-action" id="refreshRecentSalesBtn" type="button">${icon('refresh-cw')} Actualiser</button>
+        </div>
+        <div class="recent-sales-page-list">
+          ${visibleSales.length ? visibleSales.map((sale) => `
+            <article class="recent-sale-row">
+              <span class="recent-sale-status">${icon(sale.status === 'completed' ? 'check' : 'clock-3')}</span>
+              <div class="recent-sale-main">
+                <strong>${escapeHtml(sale.reference || 'Vente caisse')}</strong>
+                <small>${escapeHtml(formatDate(sale.createdAt))} · ${escapeHtml(sale.customerName || 'Client comptoir')}</small>
+              </div>
+              <div class="recent-sale-meta">
+                <small>${escapeHtml(sale.itemCount || 0)} article(s) · ${escapeHtml(formatPaymentMethod(sale.paymentMethod))}</small>
+                <b>${escapeHtml(formatMoney(sale.total))}</b>
+              </div>
+            </article>
+          `).join('') : `
+            <div class="recent-sales-page-empty">
+              ${icon('receipt-text')}
+              <strong>Aucune vente récente</strong>
+              <span>Les ventes validées depuis cette caisse apparaîtront ici.</span>
+            </div>
+          `}
+        </div>
+      </section>
     </main>
   `;
 }
@@ -1143,7 +1226,8 @@ function getPaymentAction(totals) {
 
 function renderPaymentTotals(totals) {
   return `
-    <div><span>Total des produits</span><strong>${escapeHtml(formatMoney(totals.total))}</strong></div>
+    <div><span>Total des produits</span><strong>${escapeHtml(formatMoney(totals.subtotal))}</strong></div>
+    <div><span>Rabais</span><strong>- ${escapeHtml(formatMoney(totals.discount))}</strong></div>
     ${totals.tax > 0 ? `<div><span>Taxes</span><strong>${escapeHtml(formatMoney(totals.tax))}</strong></div>` : ''}
     <div class="grand"><span>Total à payer</span><strong>${escapeHtml(formatMoney(totals.total))}</strong></div>
     <div><span>Monnaie à rendre</span><strong>${escapeHtml(formatMoney(totals.changeDue))}</strong></div>
@@ -1193,6 +1277,19 @@ function renderPaymentCard(totals) {
         <label>
           <span>Montant reçu</span>
           <input id="amountPaidInput" type="number" min="0" step="1" placeholder="Montant remis par le client" value="${state.amountPaid > 0 ? escapeHtml(state.amountPaid) : ''}">
+        </label>
+      </div>
+      <div class="payment-inputs discount-fields">
+        <label>
+          <span>Rabais (%)</span>
+          <div class="discount-control">
+            <input id="discountInput" type="number" min="0" max="100" step="0.01" placeholder="0" value="${state.discount > 0 ? escapeHtml(state.discount) : ''}" ${state.discountAuthorized ? '' : 'readonly'} aria-describedby="discountAuthHint">
+            <button class="discount-authorize-btn ${state.discountAuthorized ? 'authorized' : ''}" id="openDiscountAuthorizationBtn" type="button">
+              ${icon(state.discountAuthorized ? 'shield-check' : 'lock-keyhole')}
+              <span>${state.discountAuthorized ? 'Autorisé' : 'Autoriser'}</span>
+            </button>
+          </div>
+          <small class="discount-auth-hint" id="discountAuthHint">${state.discountAuthorized ? 'Rabais autorisé par un administrateur.' : 'Coordonnées administrateur requises.'}</small>
         </label>
       </div>
       <div class="totals-card">
@@ -1265,6 +1362,37 @@ function renderCloseSessionModal(session) {
           <button class="danger-action wide" id="confirmCloseSessionBtn" type="button">${icon('lock')} Confirmer la fermeture</button>
         </div>
       </section>
+    </div>
+  `;
+}
+
+function renderDiscountAuthorizationModal() {
+  return `
+    <div class="modal-backdrop discount-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="discountAuthorizationTitle">
+      <form class="discount-authorization-modal" id="discountAuthorizationForm">
+        <button class="icon-action modal-close" id="closeDiscountAuthorizationBtn" type="button" aria-label="Fermer">${icon('x')}</button>
+        <span class="discount-modal-icon">${icon('shield-check')}</span>
+        <p class="eyebrow">Autorisation requise</p>
+        <h2 id="discountAuthorizationTitle">Appliquer un rabais</h2>
+        <p class="discount-modal-copy">Seul un administrateur peut autoriser une remise sur cette vente.</p>
+        <label>
+          <span>Rabais souhaité (%)</span>
+          <input id="discountRequestedInput" type="number" min="0.01" max="100" step="0.01" value="${escapeHtml(state.discountRequested || '')}" placeholder="Ex. 10" required autofocus>
+        </label>
+        <label>
+          <span>Email administrateur</span>
+          <input id="discountAdminEmailInput" type="email" autocomplete="username" value="${escapeHtml(state.discountAdminEmail)}" placeholder="admin@exemple.com" required>
+        </label>
+        <label>
+          <span>Mot de passe administrateur</span>
+          <input id="discountAdminPasswordInput" type="password" autocomplete="current-password" placeholder="Mot de passe" required>
+        </label>
+        ${state.discountAuthError ? `<div class="form-error">${escapeHtml(state.discountAuthError)}</div>` : ''}
+        <div class="discount-modal-actions">
+          <button class="secondary-action" id="cancelDiscountAuthorizationBtn" type="button">Annuler</button>
+          <button class="primary-action" id="authorizeDiscountBtn" type="submit">${icon('shield-check')} Autoriser le rabais</button>
+        </div>
+      </form>
     </div>
   `;
 }
@@ -1342,6 +1470,19 @@ function bindAppEvents() {
     state.sidebarCollapsed = !state.sidebarCollapsed;
     renderApp();
   });
+  document.getElementById('cashierModeBtn')?.addEventListener('click', () => {
+    state.activeView = 'register';
+    renderApp();
+  });
+  document.getElementById('recentSalesBtn')?.addEventListener('click', () => {
+    state.activeView = 'recent-sales';
+    renderApp();
+  });
+  document.getElementById('backToRegisterBtn')?.addEventListener('click', () => {
+    state.activeView = 'register';
+    renderApp();
+  });
+  document.getElementById('refreshRecentSalesBtn')?.addEventListener('click', loadWorkspace);
   document.getElementById('refreshEmptyProductsBtn')?.addEventListener('click', loadWorkspace);
   document.getElementById('dismissNoticeBtn')?.addEventListener('click', () => {
     if (noticeTimer) window.clearTimeout(noticeTimer);
@@ -1361,43 +1502,7 @@ function bindAppEvents() {
     state.activeCategory = button.dataset.category || 'all';
     renderApp();
   }));
-  document.querySelectorAll('[data-add]').forEach((button) => button.addEventListener('click', () => addCartItem(button.dataset.add)));
-  document.querySelectorAll('[data-qty]').forEach((button) => button.addEventListener('click', () => updateQty(button.dataset.qty, toNumber(button.dataset.delta))));
-  document.querySelectorAll('[data-qty-input]').forEach((input) => input.addEventListener('change', () => setQty(input.dataset.qtyInput, toNumber(input.value))));
-  document.querySelectorAll('[data-remove]').forEach((button) => button.addEventListener('click', () => removeItem(button.dataset.remove)));
-  document.getElementById('clearCartBtn')?.addEventListener('click', () => {
-    if (!window.confirm('Voulez-vous vraiment vider le panier de caisse ?')) return;
-    state.cart = [];
-    state.discount = 0;
-    state.discountType = 'fixed';
-    state.amountPaid = 0;
-    state.keypadBuffer = '';
-    showNotice('info', 'Panier vidé', 'La vente en cours est remise à zéro.');
-  });
-  document.getElementById('discountTypeSelect')?.addEventListener('change', (event) => {
-    state.discountType = event.target.value === 'percent' ? 'percent' : 'fixed';
-    renderApp();
-  });
-  document.getElementById('discountInput')?.addEventListener('change', (event) => {
-    state.discount = Math.max(0, toNumber(event.target.value));
-    renderApp();
-  });
-  document.getElementById('amountPaidInput')?.addEventListener('input', (event) => {
-    state.amountPaid = Math.max(0, toNumber(event.target.value));
-    // Update only the payment summary so the input and its caret are preserved.
-    syncPaymentBar();
-  });
-  document.querySelectorAll('[data-tender]').forEach((button) => button.addEventListener('click', () => applyTenderShortcut(button.dataset.tender)));
-  document.querySelectorAll('[data-numpad]').forEach((button) => button.addEventListener('click', () => applyNumpadKey(button.dataset.numpad)));
-  document.querySelectorAll('[data-discount-mode]').forEach((button) => button.addEventListener('click', () => {
-    state.discountType = button.dataset.discountMode === 'percent' ? 'percent' : 'fixed';
-    renderApp();
-    setTimeout(() => document.getElementById('discountInput')?.focus(), 0);
-  }));
-  document.querySelectorAll('[data-shortcut-action]').forEach((button) => button.addEventListener('click', () => {
-    showNotice('info', 'Action bientôt disponible', 'Ce raccourci est préparé pour une prochaine étape.');
-  }));
-  document.getElementById('completeSaleBtn')?.addEventListener('click', completeSale);
+  if (typeof bindRegisterEvents === 'function') bindRegisterEvents();
   document.getElementById('printReceiptBtn')?.addEventListener('click', printLastReceipt);
   document.getElementById('newSaleBtn')?.addEventListener('click', () => {
     state.lastSale = null;
@@ -1411,6 +1516,237 @@ function bindAppEvents() {
   });
   document.getElementById('cancelCloseSessionBtn')?.addEventListener('click', cancelCloseSessionModal);
   document.getElementById('cancelCloseSessionBtn2')?.addEventListener('click', cancelCloseSessionModal);
+}
+
+function bindRegisterEvents() {
+  if (root.dataset.registerEventsBound === 'true') return;
+  root.dataset.registerEventsBound = 'true';
+
+  root.addEventListener('click', (event) => {
+    if (!(event.target instanceof Element)) return;
+    const target = event.target.closest('button');
+    if (!target) return;
+
+    const addButton = target.closest('[data-add]');
+    if (addButton) {
+      addCartItem(addButton.dataset.add);
+      return;
+    }
+
+    const qtyButton = target.closest('[data-qty]');
+    if (qtyButton) {
+      updateQty(qtyButton.dataset.qty, Number(qtyButton.dataset.delta || 0));
+      return;
+    }
+
+    const removeButton = target.closest('[data-remove]');
+    if (removeButton) {
+      removeItem(removeButton.dataset.remove);
+      return;
+    }
+
+    if (target.closest('#openDiscountAuthorizationBtn')) {
+      state.discountModalOpen = true;
+      state.discountAuthError = '';
+      state.discountRequested = state.discount > 0 ? state.discount : '';
+      state.discountAdminEmail = '';
+      renderApp();
+      requestAnimationFrame(() => document.getElementById('discountRequestedInput')?.focus());
+      return;
+    }
+
+    if (target.closest('#closeDiscountAuthorizationBtn') || target.closest('#cancelDiscountAuthorizationBtn')) {
+      state.discountModalOpen = false;
+      state.discountAuthError = '';
+      renderApp();
+      return;
+    }
+
+    if (target.closest('#clearCartBtn')) {
+      if (!state.cart.length) return;
+      if (!window.confirm('Voulez-vous vider le panier ?')) return;
+      state.cart = [];
+      state.amountPaid = 0;
+      state.keypadBuffer = '';
+      state.discount = 0;
+      state.discountType = 'percent';
+      state.discountAuthorized = false;
+      refreshRegisterUI('', true);
+      return;
+    }
+
+    const tenderButton = target.closest('[data-tender]');
+    if (tenderButton) {
+      applyTenderShortcut(tenderButton.dataset.tender);
+      return;
+    }
+
+    const numpadButton = target.closest('[data-numpad]');
+    if (numpadButton) {
+      applyNumpadKey(numpadButton.dataset.numpad);
+      return;
+    }
+
+    const discountModeButton = target.closest('[data-discount-mode]');
+    if (discountModeButton) {
+      state.discountType = discountModeButton.dataset.discountMode;
+      renderApp();
+      requestAnimationFrame(() => document.getElementById('discountInput')?.focus());
+      return;
+    }
+
+    const shortcutButton = target.closest('[data-shortcut-action]');
+    if (shortcutButton) {
+      showNotice('info', 'Raccourci disponible bientôt', 'Cette action sera ajoutée dans une prochaine version.');
+      return;
+    }
+
+    if (target.closest('#completeSaleBtn')) {
+      completeSale();
+      return;
+    }
+
+    if (target.closest('#refreshBtn')) {
+      loadWorkspace();
+    }
+  });
+
+  root.addEventListener('change', (event) => {
+    const target = event.target;
+    if (target.matches('[data-qty-input]')) {
+      setQty(target.dataset.qtyInput, target.value);
+      return;
+    }
+    if (target.matches('#discountTypeSelect')) {
+      state.discountType = target.value;
+      renderApp();
+      return;
+    }
+    if (target.matches('#discountInput')) {
+      if (!state.discountAuthorized) return;
+      state.discount = Math.max(0, toNumber(target.value));
+      syncPaymentBar();
+    }
+  });
+
+  root.addEventListener('input', (event) => {
+    const target = event.target;
+    if (target.matches('#discountRequestedInput')) {
+      state.discountRequested = target.value || '';
+      return;
+    }
+    if (target.matches('#discountAdminEmailInput')) {
+      state.discountAdminEmail = target.value || '';
+      return;
+    }
+    if (target.matches('#discountInput')) {
+      if (!state.discountAuthorized) return;
+      state.discount = Math.min(100, Math.max(0, toNumber(target.value)));
+      syncPaymentBar();
+      return;
+    }
+    if (!target.matches('#amountPaidInput')) return;
+    state.amountPaid = Math.max(0, toNumber(target.value));
+    syncPaymentBar();
+  });
+
+  root.addEventListener('submit', (event) => {
+    if (event.target.matches('#discountAuthorizationForm')) authorizeDiscount(event);
+  });
+}
+
+function refreshRegisterUI(changedKey = '', refreshProducts = false) {
+  if (state.activeView !== 'register' || !document.querySelector('.pos-workspace')) {
+    renderApp();
+    return;
+  }
+
+  const totals = getCartTotals();
+  const cartPanel = document.querySelector('.pos-cart-panel');
+  if (cartPanel) {
+    cartPanel.className = `pos-cart-panel ${state.lastSale ? 'has-receipt' : ''}`;
+    cartPanel.innerHTML = `
+      ${state.lastSale ? renderSaleSuccessCard() : ''}
+      ${renderCartCard(totals)}
+      <div class="session-footer">
+        <button class="ghost-action" id="refreshBtn" type="button">${icon('refresh-cw')} Actualiser</button>
+        <span class="automatic-session-note">${icon('zap')} Caisse ouverte automatiquement</span>
+      </div>
+    `;
+  }
+
+  const paymentTools = document.querySelector('.pos-bottom-tools');
+  if (paymentTools) paymentTools.innerHTML = renderPaymentCard(totals);
+
+  const productsGrid = document.querySelector('.products-grid');
+  if (productsGrid) {
+    if (refreshProducts) {
+      const items = getCatalogItems();
+      productsGrid.innerHTML = items.length ? items.map(renderProductCard).join('') : renderEmptyProducts();
+    } else if (changedKey) {
+      const item = getCatalogItems().find((entry) => entry.key === changedKey);
+      const oldCard = [...productsGrid.querySelectorAll('[data-add]')]
+        .find((button) => button.dataset.add === changedKey)
+        ?.closest('.product-card');
+      if (item && oldCard) oldCard.outerHTML = renderProductCard(item);
+    }
+  }
+
+  refreshIcons();
+}
+
+async function authorizeDiscount(event) {
+  event.preventDefault();
+  const form = event.target;
+  const percent = Math.min(100, Math.max(0, toNumber(form.querySelector('#discountRequestedInput')?.value)));
+  const email = normalizeText(form.querySelector('#discountAdminEmailInput')?.value).toLowerCase();
+  const password = form.querySelector('#discountAdminPasswordInput')?.value || '';
+  const submitButton = form.querySelector('#authorizeDiscountBtn');
+
+  state.discountRequested = percent || '';
+  state.discountAdminEmail = email;
+  state.discountAuthError = '';
+  if (!percent || percent <= 0 || percent > 100 || !email || !password) {
+    state.discountAuthError = 'Entrez un pourcentage valide et les coordonnées de l’administrateur.';
+    renderApp();
+    return;
+  }
+
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.innerHTML = `${icon('loader-circle')} Vérification...`;
+    refreshIcons();
+  }
+
+  let secondaryUser = null;
+  try {
+    await adminCheckReadyPromise;
+    const credential = await signInWithEmailAndPassword(adminCheckAuth, email, password);
+    secondaryUser = credential.user;
+    const profileSnap = await getDoc(doc(adminCheckDb, 'clients', secondaryUser.uid));
+    const profile = profileSnap.exists() ? profileSnap.data() : {};
+    const role = getRole(profile);
+    if (role !== 'admin' && role !== 'administrateur') {
+      throw new Error('Ce compte ne possède pas les droits administrateur.');
+    }
+
+    await signOut(adminCheckAuth);
+    state.discountAuthorized = true;
+    state.discountType = 'percent';
+    state.discount = percent;
+    state.discountModalOpen = false;
+    state.discountAdminEmail = '';
+    state.discountRequested = '';
+    state.discountAuthError = '';
+    renderApp();
+  } catch (error) {
+    if (secondaryUser || adminCheckAuth.currentUser) await signOut(adminCheckAuth).catch(() => null);
+    state.discountAuthError = error?.code === 'auth/invalid-credential' || error?.code === 'auth/wrong-password'
+      ? 'Email ou mot de passe administrateur incorrect.'
+      : error?.message || 'Autorisation administrateur impossible.';
+    renderApp();
+    requestAnimationFrame(() => document.getElementById('discountAdminPasswordInput')?.focus());
+  }
 }
 
 function rerenderAndFocus(inputId, value = '') {
@@ -1472,28 +1808,32 @@ function addCartItem(key) {
   } else {
     state.cart.push({ ...item, quantity: 1 });
   }
-  renderApp();
-  showNotice('success', 'Produit ajouté', `${item.productName} est dans le panier.`);
+  refreshRegisterUI(key);
 }
 
 function updateQty(key, delta) {
   const item = state.cart.find((entry) => entry.key === key);
   if (!item) return;
   item.quantity = Math.min(item.availableQty, Math.max(1, toNumber(item.quantity) + delta));
-  renderApp();
+  refreshRegisterUI(key);
 }
 
 function setQty(key, quantity) {
   const item = state.cart.find((entry) => entry.key === key);
   if (!item) return;
   item.quantity = Math.min(item.availableQty, Math.max(1, Math.round(quantity || 1)));
-  renderApp();
+  refreshRegisterUI(key);
 }
 
 function removeItem(key) {
   const removed = state.cart.find((entry) => entry.key === key);
   state.cart = state.cart.filter((entry) => entry.key !== key);
-  showNotice('info', 'Produit retiré', removed?.productName || 'La ligne a été supprimée du panier.');
+  if (!state.cart.length) {
+    state.discount = 0;
+    state.discountType = 'percent';
+    state.discountAuthorized = false;
+  }
+  if (removed) refreshRegisterUI(key);
 }
 
 function applyTenderShortcut(shortcut) {
@@ -1561,94 +1901,124 @@ function printLastReceipt() {
     showNotice('warning', 'Impression bloquée', 'Autorisez les fenêtres pop-up pour imprimer le reçu.');
     return;
   }
+  const logoUrl = new URL('./assets/smart-caisse-mark.svg', import.meta.url).href;
   printable.document.write(`
     <!doctype html>
     <html lang="fr">
       <head>
         <meta charset="utf-8">
-        <title>${escapeHtml(sale.reference || 'Reçu caisse')}</title>
+        <title>${escapeHtml(sale.reference || 'Reçu Smart Cut Services')}</title>
         <style>
           @page { size: 80mm auto; margin: 0; }
           * { box-sizing: border-box; }
           html, body { margin: 0; padding: 0; background: #eef2f7; }
           body {
             width: 80mm;
-            color: #0f172a;
-            font: 11px/1.4 Arial, Helvetica, sans-serif;
+            color: #111827;
+            font: 10px/1.35 Arial, Helvetica, sans-serif;
             -webkit-print-color-adjust: exact;
             print-color-adjust: exact;
           }
           .receipt {
             width: 80mm;
-            min-height: 100%;
             margin: 18px auto;
-            padding: 7mm 5mm 6mm;
+            padding: 5mm 5mm 6mm;
             background: #fff;
-            border-top: 4px solid #2563eb;
             box-shadow: 0 8px 26px rgba(15, 23, 42, .12);
           }
-          h1 {
-            margin: 0 0 4px;
-            color: #0f172a;
-            font-size: 18px;
-            letter-spacing: .01em;
+          .receipt-header {
+            padding-bottom: 10px;
             text-align: center;
+            border-bottom: 1px dashed #9ca3af;
           }
-          .receipt::before {
-            content: 'SC  SMART CUT SERVICES';
+          .receipt-logo {
             display: block;
-            margin-bottom: 10px;
-            color: #2563eb;
-            font-size: 12px;
-            font-weight: 800;
-            letter-spacing: .08em;
+            width: 27mm;
+            height: 27mm;
+            margin: 0 auto 7px;
+          }
+          .receipt-header h1 {
+            margin: 0;
+            color: #111827;
+            font-size: 14px;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+          }
+          .receipt-header p {
+            margin: 3px 0 0;
+            color: #374151;
+            font-size: 9px;
+          }
+          .receipt-header .tagline {
+            margin-top: 8px;
+            font-size: 9px;
+            font-weight: 700;
+          }
+          .contact {
+            margin: 9px 0 0;
+            color: #4b5563;
+            font-size: 8.5px;
+            line-height: 1.5;
             text-align: center;
           }
           .center { text-align: center; }
-          .muted { color: #64748b; }
+          .muted { color: #6b7280; }
           .row {
             display: flex;
             justify-content: space-between;
             align-items: baseline;
             gap: 12px;
-            margin: 5px 0;
-            color: #475569;
+            margin: 4px 0;
+            color: #374151;
           }
-          .row strong, .row b { color: #0f172a; }
-          .line { border-top: 1px solid #cbd5e1; margin: 12px 0; }
+          .row strong, .row b { color: #111827; }
+          .meta { margin: 10px 0; }
+          .meta .row { font-size: 9px; }
+          .meta .row strong { max-width: 52mm; text-align: right; word-break: break-word; }
+          .line { border-top: 1px dashed #9ca3af; margin: 10px 0; }
           .item {
             margin: 0;
-            padding: 9px 0;
-            border-bottom: 1px solid #e2e8f0;
+            padding: 8px 0;
+            border-bottom: 1px dotted #d1d5db;
           }
           .item:last-of-type { border-bottom: 0; }
           .item strong {
             display: block;
-            color: #0f172a;
-            font-size: 11px;
+            color: #111827;
+            font-size: 10px;
+            line-height: 1.25;
           }
           .item .muted {
             display: block;
             margin-top: 2px;
-            font-size: 9px;
+            font-size: 8.5px;
           }
           .item .row { margin-top: 6px; }
           .total {
-            margin: 9px 0;
-            padding: 10px 0;
-            border-top: 1px solid #bfdbfe;
-            border-bottom: 1px solid #bfdbfe;
-            color: #0f172a;
-            font-size: 14px;
+            margin: 8px 0;
+            padding: 9px 0;
+            border-top: 1px solid #111827;
+            border-bottom: 1px solid #111827;
+            color: #111827;
+            font-size: 13px;
             font-weight: 800;
           }
-          .total strong { color: #1d4ed8; font-size: 17px; }
-          .receipt > p:last-child {
-            margin: 14px 0 0;
-            padding-top: 11px;
-            border-top: 1px solid #dbe3ef;
-            color: #64748b;
+          .total strong { color: #111827; font-size: 15px; }
+          .footer-note {
+            margin: 12px 0 0;
+            padding-top: 10px;
+            border-top: 1px dashed #9ca3af;
+            color: #4b5563;
+            font-size: 8.5px;
+            line-height: 1.45;
+            text-align: center;
+          }
+          .thanks {
+            margin: 10px 0 0;
+            color: #111827;
             font-size: 10px;
+            font-weight: 700;
+            text-align: center;
           }
           @media print {
             html, body { width: 80mm; background: #fff; }
@@ -1658,13 +2028,21 @@ function printLastReceipt() {
       </head>
       <body>
         <main class="receipt">
-          <h1>Smart Cut Services</h1>
-          <p class="center muted">Reçu de caisse</p>
-          <div class="line"></div>
-          <div class="row"><span>No</span><strong>${escapeHtml(sale.reference || '-')}</strong></div>
-          <div class="row"><span>Date</span><strong>${escapeHtml(formatDate(sale.createdAt))}</strong></div>
-          <div class="row"><span>Caissier</span><strong>${escapeHtml(getDisplayName())}</strong></div>
-          <div class="row"><span>Client</span><strong>${escapeHtml(sale.customerName || 'Client comptoir')}</strong></div>
+          <header class="receipt-header">
+            <img class="receipt-logo" src="${escapeHtml(logoUrl)}" alt="Smart Cut Services">
+            <h1>Smart Cut Services</h1>
+            <p>Delmas, Port-au-Prince, Ouest, Haïti</p>
+            <p class="tagline">Smart Cut Services<br>Votre partenaire en matière de personnalisation.</p>
+            <p class="contact">Website : www.smartcutservices.com<br>E-mail : administration@smartcutservices.com<br>Phone : +509 3491 3898 / +509 4023 7187</p>
+          </header>
+          <p class="center muted">Chaque détail compte !</p>
+          <div class="meta">
+            <div class="row"><span>Référence</span><strong>${escapeHtml(sale.reference || '-')}</strong></div>
+            <div class="row"><span>Employé / Propriétaire</span><strong>${escapeHtml(sale.cashierName || getDisplayName())}</strong></div>
+            <div class="row"><span>POS</span><strong>SmartCutServices</strong></div>
+            <div class="row"><span>Client</span><strong>${escapeHtml(sale.customerName || 'Client comptoir')}</strong></div>
+            <div class="row"><span>Date</span><strong>${escapeHtml(formatDate(sale.createdAt))}</strong></div>
+          </div>
           <div class="line"></div>
           ${lines.map((item) => `
             <section class="item">
@@ -1675,14 +2053,13 @@ function printLastReceipt() {
           `).join('')}
           <div class="line"></div>
           <div class="row"><span>Sous-total</span><strong>${escapeHtml(formatMoney(sale.subtotal))}</strong></div>
-          <div class="row"><span>Remise</span><strong>- ${escapeHtml(formatMoney(sale.discount))}</strong></div>
-          <div class="row"><span>Taxes</span><strong>${escapeHtml(formatMoney(sale.tax))}</strong></div>
+          ${toNumber(sale.discount) > 0 ? `<div class="row"><span>Rabais</span><strong>- ${escapeHtml(formatMoney(sale.discount))}</strong></div>` : ''}
+          ${toNumber(sale.tax) > 0 ? `<div class="row"><span>Taxes</span><strong>${escapeHtml(formatMoney(sale.tax))}</strong></div>` : ''}
           <div class="row total"><span>Total</span><strong>${escapeHtml(formatMoney(sale.total))}</strong></div>
-          <div class="row"><span>Paiement</span><strong>${escapeHtml(formatPaymentMethod(sale.paymentMethod))}</strong></div>
-          <div class="row"><span>Reçu</span><strong>${escapeHtml(formatMoney(sale.amountPaid))}</strong></div>
+          <div class="row"><span>${escapeHtml(formatPaymentMethod(sale.paymentMethod))}</span><strong>${escapeHtml(formatMoney(sale.amountPaid))}</strong></div>
           <div class="row"><span>Monnaie</span><strong>${escapeHtml(formatMoney(sale.changeDue))}</strong></div>
-          <div class="line"></div>
-          <p class="center">Merci pour votre achat.</p>
+          <p class="footer-note">Merci de vérifier vos produits avant de quitter les lieux, car les retours ne sont normalement pas possibles après l’achat.</p>
+          <p class="thanks">Merci pour votre achat.<br>Nous vous remercions pour votre confiance.</p>
         </main>
         <script>window.onload = () => { window.print(); setTimeout(() => window.close(), 250); };</script>
       </body>
@@ -1867,7 +2244,8 @@ async function completeSale() {
     };
     state.cart = [];
     state.discount = 0;
-    state.discountType = 'fixed';
+    state.discountType = 'percent';
+    state.discountAuthorized = false;
     state.amountPaid = 0;
     state.customerName = '';
     state.customerPhone = '';
@@ -1904,7 +2282,8 @@ async function closeSession() {
   });
   state.cart = [];
   state.discount = 0;
-  state.discountType = 'fixed';
+  state.discountType = 'percent';
+  state.discountAuthorized = false;
   state.amountPaid = 0;
   state.keypadBuffer = '';
   state.closeSessionModal = false;
